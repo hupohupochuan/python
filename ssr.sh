@@ -611,17 +611,19 @@ Debian_apt(){
 # 下载 ShadowsocksR
 Download_SSR(){
 	cd "/usr/local/"
-	wget -N --no-check-certificate "https://github.com/ToyoDAdoubiBackup/shadowsocksr/archive/manyuser.zip"
-	#"https://raw.githubusercontent.com/hupohupochuan/python.bak/master/manyuser.zip"
+	#wget -N --no-check-certificate "https://github.com/ToyoDAdoubiBackup/shadowsocksr/archive/manyuser.zip"
+	wget -N --no-check-certificate "https://github.com/hupohupochuan/python/archive/master.zip"
+
+	#"https://raw.githubusercontent.com/hupohupochuan/python.bak/master/master.zip"
 	#git config --global http.sslVerify false
 	#env GIT_SSL_NO_VERIFY=true git clone -b manyuser https://github.com/ToyoDAdoubiBackup/shadowsocksr.git
 	#[[ ! -e ${ssr_folder} ]] && echo -e "${Error} ShadowsocksR服务端 下载失败 !" && exit 1
-	[[ ! -e "manyuser.zip" ]] && echo -e "${Error} ShadowsocksR服务端 压缩包 下载失败 !" && rm -rf manyuser.zip && exit 1
-	unzip "manyuser.zip"
-	[[ ! -e "/usr/local/shadowsocksr-manyuser/" ]] && echo -e "${Error} ShadowsocksR服务端 解压失败 !" && rm -rf manyuser.zip && exit 1
-	mv "/usr/local/shadowsocksr-manyuser/" "/usr/local/shadowsocksr/"
-	[[ ! -e "/usr/local/shadowsocksr/" ]] && echo -e "${Error} ShadowsocksR服务端 重命名失败 !" && rm -rf manyuser.zip && rm -rf "/usr/local/shadowsocksr-manyuser/" && exit 1
-	rm -rf manyuser.zip
+	[[ ! -e "master.zip" ]] && echo -e "${Error} ShadowsocksR服务端 压缩包 下载失败 !" && rm -rf master.zip && exit 1
+	unzip "master.zip"
+	[[ ! -e "/usr/local/python-master/" ]] && echo -e "${Error} ShadowsocksR服务端 解压失败 !" && rm -rf master.zip && exit 1
+	mv "/usr/local/python-master/" "/usr/local/shadowsocksr/"
+	[[ ! -e "/usr/local/shadowsocksr/" ]] && echo -e "${Error} ShadowsocksR服务端 重命名失败 !" && rm -rf master.zip && rm -rf "/usr/local/python-master/" && exit 1
+	rm -rf master.zip
 	[[ -e ${config_folder} ]] && rm -rf ${config_folder}
 	mkdir ${config_folder}
 	[[ ! -e ${config_folder} ]] && echo -e "${Error} ShadowsocksR配置文件的文件夹 建立失败 !" && exit 1
@@ -645,23 +647,42 @@ Service_SSR(){
 	echo -e "${Info} ShadowsocksR服务 管理脚本下载完成 !"
 }
 # 安装 JQ解析器
+# JQ_install(){
+	# if [[ ! -e ${jq_file} ]]; then
+		# cd "${ssr_folder}"
+		# if [[ ${bit} = "x86_64" ]]; then
+			# mv "jq-linux64" "jq"
+			# #wget --no-check-certificate "https://github.com/stedolan/jq/releases/download/jq-1.5/jq-linux64" -O ${jq_file}
+		# else
+			# mv "jq-linux32" "jq"
+			# #wget --no-check-certificate "https://github.com/stedolan/jq/releases/download/jq-1.5/jq-linux32" -O ${jq_file}
+		# fi
+		# [[ ! -e ${jq_file} ]] && echo -e "${Error} JQ解析器 重命名失败，请检查 !" && exit 1
+		# chmod +x ${jq_file}
+		# echo -e "${Info} JQ解析器 安装完成，继续..." 
+	# else
+		# echo -e "${Info} JQ解析器 已安装，继续..."
+	# fi
+# }
+
 JQ_install(){
 	if [[ ! -e ${jq_file} ]]; then
-		cd "${ssr_folder}"
-		if [[ ${bit} = "x86_64" ]]; then
-			mv "jq-linux64" "jq"
-			#wget --no-check-certificate "https://github.com/stedolan/jq/releases/download/jq-1.5/jq-linux64" -O ${jq_file}
+		echo -e "${Info} 开始安装 JQ解析器..."
+		if [[ ${release} == "centos" ]]; then
+			yum install -y jq
 		else
-			mv "jq-linux32" "jq"
-			#wget --no-check-certificate "https://github.com/stedolan/jq/releases/download/jq-1.5/jq-linux32" -O ${jq_file}
+			apt-get install -y jq
 		fi
-		[[ ! -e ${jq_file} ]] && echo -e "${Error} JQ解析器 重命名失败，请检查 !" && exit 1
+		# 创建软链接到 SSR 目录，保持脚本后续逻辑兼容
+		ln -sf /usr/bin/jq ${jq_file}
+		[[ ! -e ${jq_file} ]] && echo -e "${Error} JQ解析器 安装失败，请检查 !" && exit 1
 		chmod +x ${jq_file}
 		echo -e "${Info} JQ解析器 安装完成，继续..." 
 	else
 		echo -e "${Info} JQ解析器 已安装，继续..."
 	fi
 }
+
 # 安装 依赖
 Installation_dependency(){
 	if [[ ${release} == "centos" ]]; then
