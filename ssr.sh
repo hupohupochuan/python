@@ -711,7 +711,7 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=/usr/local/shadowsocksr/shadowsocks
-ExecStart=/usr/bin/${python_ver} /usr/local/shadowsocksr/shadowsocks/server.py -c /etc/shadowsocksr/user-config.json a
+ExecStart=/usr/bin/${python_ver} /usr/local/shadowsocksr/shadowsocks/server.py -c /etc/shadowsocksr/user-config.json
 Restart=on-failure
 RestartSec=5
 LimitNOFILE=512000
