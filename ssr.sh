@@ -700,21 +700,45 @@ Download_SSR(){
 	echo -e "${Info} ShadowsocksR服务端 下载完成 !"
 }
 Service_SSR(){
-	if [[ ${release} = "centos" ]]; then
-		if ! wget --no-check-certificate https://raw.githubusercontent.com/hupohupochuan/python/master/centos -O /etc/init.d/ssr; then
-			echo -e "${Error} ShadowsocksR服务 管理脚本下载失败 !" && exit 1
-		fi
-		chmod +x /etc/init.d/ssr
-		chkconfig --add ssr
-		chkconfig ssr on
+	if command -v systemctl &>/dev/null; then
+		local python_ver=$(ls /usr/bin 2>/dev/null | grep -e "^python[23]\.[0-9]\+$" | tail -1)
+		[[ -z "$python_ver" ]] && python_ver="python3"
+		cat > /etc/systemd/system/ssr.service <<-EOF
+[Unit]
+Description=ShadowsocksR Server
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/usr/local/shadowsocksr/shadowsocks
+ExecStart=/usr/bin/${python_ver} /usr/local/shadowsocksr/shadowsocks/server.py -c /etc/shadowsocksr/user-config.json a
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=512000
+
+[Install]
+WantedBy=multi-user.target
+EOF
+		systemctl daemon-reload
+		systemctl enable ssr
+		echo -e "${Info} ShadowsocksR systemd服务 安装完成 !"
 	else
-		if ! wget --no-check-certificate  https://raw.githubusercontent.com/hupohupochuan/python.bak/master/ssr_debian   -O /etc/init.d/ssr; then
-			echo -e "${Error} ShadowsocksR服务 管理脚本下载失败 !" && exit 1
+		if [[ ${release} = "centos" ]]; then
+			if ! wget --no-check-certificate https://raw.githubusercontent.com/hupohupochuan/python/master/centos -O /etc/init.d/ssr; then
+				echo -e "${Error} ShadowsocksR服务 管理脚本下载失败 !" && exit 1
+			fi
+			chmod +x /etc/init.d/ssr
+			chkconfig --add ssr
+			chkconfig ssr on
+		else
+			if ! wget --no-check-certificate https://raw.githubusercontent.com/hupohupochuan/python.bak/master/ssr_debian -O /etc/init.d/ssr; then
+				echo -e "${Error} ShadowsocksR服务 管理脚本下载失败 !" && exit 1
+			fi
+			chmod +x /etc/init.d/ssr
+			update-rc.d -f ssr defaults
 		fi
-		chmod +x /etc/init.d/ssr
-		update-rc.d -f ssr defaults
+		echo -e "${Info} ShadowsocksR服务 管理脚本下载完成 !"
 	fi
-	echo -e "${Info} ShadowsocksR服务 管理脚本下载完成 !"
 }
 # 安装 JQ解析器
 # JQ_install(){
@@ -819,10 +843,16 @@ Uninstall_SSR(){
 			done
 			Save_iptables
 		fi
+		if command -v systemctl &>/dev/null && [[ -f /etc/systemd/system/ssr.service ]]; then
+			systemctl stop ssr 2>/dev/null
+			systemctl disable ssr 2>/dev/null
+			rm -rf /etc/systemd/system/ssr.service
+			systemctl daemon-reload 2>/dev/null
+		fi
 		if [[ ${release} = "centos" ]]; then
-			chkconfig --del ssr
+			chkconfig --del ssr 2>/dev/null
 		else
-			update-rc.d -f ssr remove
+			update-rc.d -f ssr remove 2>/dev/null
 		fi
 		rm -rf ${ssr_folder} && rm -rf ${config_folder} && rm -rf /etc/init.d/ssr
 		echo && echo " ShadowsocksR 卸载完成 !" && echo
@@ -1245,11 +1275,19 @@ Port_mode_switching(){
 		fi
 	fi
 }
+_ssr_service(){
+	if command -v systemctl &>/dev/null && [[ -f /etc/systemd/system/ssr.service ]]; then
+		systemctl $1 ssr 2>/dev/null
+	else
+		/etc/init.d/ssr $1 2>/dev/null
+	fi
+}
+
 Start_SSR(){
 	SSR_installation_status
 	check_pid
 	[[ ! -z ${PID} ]] && echo -e "${Error} ShadowsocksR 正在运行 !" && exit 1
-	/etc/init.d/ssr start
+	_ssr_service start
 	check_pid
 	[[ ! -z ${PID} ]] && View_User
 }
@@ -1257,13 +1295,13 @@ Stop_SSR(){
 	SSR_installation_status
 	check_pid
 	[[ -z ${PID} ]] && echo -e "${Error} ShadowsocksR 未运行 !" && exit 1
-	/etc/init.d/ssr stop
+	_ssr_service stop
 }
 Restart_SSR(){
 	SSR_installation_status
 	check_pid
-	[[ ! -z ${PID} ]] && /etc/init.d/ssr stop
-	/etc/init.d/ssr start
+	[[ ! -z ${PID} ]] && _ssr_service stop
+	_ssr_service start
 	check_pid
 	[[ ! -z ${PID} ]] && View_User
 }
@@ -1516,8 +1554,10 @@ Set_config_connect_verbose_info(){
 Update_Shell(){
 	sh_new_ver=$(wget --no-check-certificate -qO- -t1 -T3 "https://raw.githubusercontent.com/hupohupochuan/python/master/ssr.sh"|grep 'sh_ver="'|awk -F "=" '{print $NF}'|sed 's/\"//g'|head -1) && sh_new_type="github"
 	[[ -z ${sh_new_ver} ]] && echo -e "${Error} 无法链接到 Github !" && exit 0
-	if [[ -e "/etc/init.d/ssr" ]]; then
+	if [[ -e "/etc/init.d/ssr" ]] || [[ -f "/etc/systemd/system/ssr.service" ]]; then
 		rm -rf /etc/init.d/ssr
+		rm -rf /etc/systemd/system/ssr.service
+		systemctl daemon-reload 2>/dev/null
 		Service_SSR
 	fi
 	wget -N --no-check-certificate "https://raw.githubusercontent.com/hupohupochuan/python/master/ssr.sh" && chmod +x ssr.sh
