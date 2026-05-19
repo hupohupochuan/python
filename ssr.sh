@@ -84,37 +84,105 @@ BBR_installation_status(){
 	fi
 }
 # 设置 防火墙规则
+fw_backend="unknown"
+
+detect_firewall(){
+	if command -v firewall-cmd &>/dev/null && systemctl is-active --quiet firewalld 2>/dev/null; then
+		fw_backend="firewalld"
+	elif command -v nft &>/dev/null; then
+		fw_backend="nftables"
+	elif command -v iptables &>/dev/null; then
+		fw_backend="iptables"
+	else
+		fw_backend="none"
+	fi
+}
+
 Add_iptables(){
-	iptables -I INPUT -m state --state NEW -m tcp -p tcp --dport ${ssr_port} -j ACCEPT
-	iptables -I INPUT -m state --state NEW -m udp -p udp --dport ${ssr_port} -j ACCEPT
-	ip6tables -I INPUT -m state --state NEW -m tcp -p tcp --dport ${ssr_port} -j ACCEPT
-	ip6tables -I INPUT -m state --state NEW -m udp -p udp --dport ${ssr_port} -j ACCEPT
+	case ${fw_backend} in
+		firewalld)
+			firewall-cmd --permanent --add-port=${ssr_port}/tcp 2>/dev/null
+			firewall-cmd --permanent --add-port=${ssr_port}/udp 2>/dev/null
+			;;
+		nftables)
+			nft add rule inet filter input tcp dport ${ssr_port} accept 2>/dev/null || \
+				nft add rule ip filter input tcp dport ${ssr_port} accept 2>/dev/null
+			nft add rule inet filter input udp dport ${ssr_port} accept 2>/dev/null || \
+				nft add rule ip filter input udp dport ${ssr_port} accept 2>/dev/null
+			;;
+		iptables)
+			iptables -I INPUT -m state --state NEW -m tcp -p tcp --dport ${ssr_port} -j ACCEPT 2>/dev/null
+			iptables -I INPUT -m state --state NEW -m udp -p udp --dport ${ssr_port} -j ACCEPT 2>/dev/null
+			ip6tables -I INPUT -m state --state NEW -m tcp -p tcp --dport ${ssr_port} -j ACCEPT 2>/dev/null
+			ip6tables -I INPUT -m state --state NEW -m udp -p udp --dport ${ssr_port} -j ACCEPT 2>/dev/null
+			;;
+	esac
 }
+
 Del_iptables(){
-	iptables -D INPUT -m state --state NEW -m tcp -p tcp --dport ${port} -j ACCEPT
-	iptables -D INPUT -m state --state NEW -m udp -p udp --dport ${port} -j ACCEPT
-	ip6tables -D INPUT -m state --state NEW -m tcp -p tcp --dport ${port} -j ACCEPT
-	ip6tables -D INPUT -m state --state NEW -m udp -p udp --dport ${port} -j ACCEPT
+	case ${fw_backend} in
+		firewalld)
+			firewall-cmd --permanent --remove-port=${port}/tcp 2>/dev/null
+			firewall-cmd --permanent --remove-port=${port}/udp 2>/dev/null
+			;;
+		nftables)
+			for h in $(nft -a list chain inet filter input 2>/dev/null | grep -E "tcp dport ${port} accept|udp dport ${port} accept" | grep -oP 'handle \K\d+'); do
+				nft delete rule inet filter input handle $h 2>/dev/null
+			done
+			for h in $(nft -a list chain ip filter input 2>/dev/null | grep -E "tcp dport ${port} accept|udp dport ${port} accept" | grep -oP 'handle \K\d+'); do
+				nft delete rule ip filter input handle $h 2>/dev/null
+			done
+			;;
+		iptables)
+			iptables -D INPUT -m state --state NEW -m tcp -p tcp --dport ${port} -j ACCEPT 2>/dev/null
+			iptables -D INPUT -m state --state NEW -m udp -p udp --dport ${port} -j ACCEPT 2>/dev/null
+			ip6tables -D INPUT -m state --state NEW -m tcp -p tcp --dport ${port} -j ACCEPT 2>/dev/null
+			ip6tables -D INPUT -m state --state NEW -m udp -p udp --dport ${port} -j ACCEPT 2>/dev/null
+			;;
+	esac
 }
+
 Save_iptables(){
-	if [[ ${release} == "centos" ]]; then
-		firewall-cmd --reload
-	else
-		iptables-save > /etc/iptables.up.rules
-		ip6tables-save > /etc/ip6tables.up.rules
-	fi
+	case ${fw_backend} in
+		firewalld)
+			firewall-cmd --reload 2>/dev/null
+			;;
+		nftables)
+			if [[ -f /etc/nftables.conf ]]; then
+				nft list ruleset > /etc/nftables.conf 2>/dev/null || true
+			fi
+			;;
+		iptables)
+			iptables-save > /etc/iptables.up.rules 2>/dev/null
+			ip6tables-save > /etc/ip6tables.up.rules 2>/dev/null
+			;;
+	esac
 }
+
 Set_iptables(){
-	if [[ ${release} == "centos" ]]; then
-		firewall-cmd --reload
-		chkconfig --level 2345 iptables on
-		chkconfig --level 2345 ip6tables on
-	else
-		iptables-save > /etc/iptables.up.rules
-		ip6tables-save > /etc/ip6tables.up.rules
-		echo -e '#!/bin/bash\n/sbin/iptables-restore < /etc/iptables.up.rules\n/sbin/ip6tables-restore < /etc/ip6tables.up.rules' > /etc/network/if-pre-up.d/iptables
-		chmod +x /etc/network/if-pre-up.d/iptables
-	fi
+	case ${fw_backend} in
+		firewalld)
+			systemctl enable firewalld 2>/dev/null || true
+			firewall-cmd --reload 2>/dev/null
+			;;
+		nftables)
+			systemctl enable nftables 2>/dev/null || true
+			if [[ -f /etc/nftables.conf ]]; then
+				nft list ruleset > /etc/nftables.conf 2>/dev/null || true
+			fi
+			;;
+		iptables)
+			if [[ ${release} == "centos" ]]; then
+				chkconfig --level 2345 iptables on 2>/dev/null || true
+				chkconfig --level 2345 ip6tables on 2>/dev/null || true
+			else
+				iptables-save > /etc/iptables.up.rules 2>/dev/null
+				ip6tables-save > /etc/ip6tables.up.rules 2>/dev/null
+				echo -e '#!/bin/bash\n/sbin/iptables-restore < /etc/iptables.up.rules\n/sbin/ip6tables-restore < /etc/ip6tables.up.rules' > /etc/network/if-pre-up.d/iptables
+				chmod +x /etc/network/if-pre-up.d/iptables
+			fi
+			;;
+	esac
 }
 # 读取 配置信息
 Get_IP(){
@@ -1475,6 +1543,7 @@ menu_status(){
 	fi
 }
 check_sys
+detect_firewall
 [[ ${release} != "debian" ]] && [[ ${release} != "ubuntu" ]] && [[ ${release} != "centos" ]] && echo -e "${Error} 本脚本不支持当前系统 ${release} !" && exit 1
 echo -e "  ShadowsocksR 一键管理脚本 ${Red_font_prefix}[v${sh_ver}]${Font_color_suffix}
   ---- Toyo | doub.io/ss-jc42 ----

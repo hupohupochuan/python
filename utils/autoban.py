@@ -27,6 +27,32 @@ from __future__ import absolute_import, division, print_function, \
 import subprocess
 import sys
 import argparse
+import shutil
+
+def detect_firewall():
+    if shutil.which('firewall-cmd'):
+        return 'firewalld'
+    if shutil.which('nft'):
+        return 'nftables'
+    if shutil.which('iptables'):
+        return 'iptables'
+    return None
+
+def ban_ip_firewalld(ip):
+    return ['firewall-cmd', '--permanent', '--add-rich-rule',
+            'rule family="ipv4" source address="%s" drop' % ip]
+
+def ban_ip_nftables(ip):
+    return ['nft', 'add rule', 'inet filter input', 'ip saddr', ip, 'drop']
+
+def ban_ip_iptables(ip):
+    return ['iptables', '-A', 'INPUT', '-s', ip, '-j', 'DROP']
+
+BAN_CMDS = {
+    'firewalld': ban_ip_firewalld,
+    'nftables': ban_ip_nftables,
+    'iptables': ban_ip_iptables,
+}
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='See README')
@@ -34,6 +60,13 @@ if __name__ == '__main__':
                         help='with how many failure times it should be '
                              'considered as an attack')
     config = parser.parse_args()
+
+    fw = detect_firewall()
+    if fw is None:
+        print('Error: no firewall tool found (firewall-cmd/nft/iptables)', file=sys.stderr)
+        sys.exit(1)
+    print('Using firewall backend: %s' % fw, file=sys.stderr)
+
     ips = {}
     banned = set()
     for line in sys.stdin:
@@ -47,7 +80,7 @@ if __name__ == '__main__':
                 ips[ip] += 1
             if ip not in banned and ips[ip] >= config.count:
                 banned.add(ip)
-                cmd = ['iptables', '-A', 'INPUT', '-s', ip, '-j', 'DROP']
+                cmd = BAN_CMDS[fw](ip)
                 print(' '.join(cmd), file=sys.stderr)
                 sys.stderr.flush()
                 subprocess.call(cmd)
