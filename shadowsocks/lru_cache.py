@@ -21,9 +21,6 @@ from __future__ import absolute_import, division, print_function, \
 import collections
 import logging
 import time
-import collections
-import logging
-import time
 
 # 添加以下兼容代码（支持 Python 3.3 ~ 3.12+）
 try:
@@ -38,7 +35,7 @@ if __name__ == '__main__':
 
 try:
     from collections import OrderedDict
-except:
+except ImportError:
     from shadowsocks.ordereddict import OrderedDict
 
 # this LRUCache is optimized for concurrency, not QPS

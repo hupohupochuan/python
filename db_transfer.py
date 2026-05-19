@@ -96,9 +96,7 @@ class TransferBase(object):
 				allow = False
 
 			port = row['port']
-			passwd = common.to_bytes(row['passwd'])
-			if hasattr(passwd, 'encode'):
-				passwd = passwd.encode('utf-8')
+			passwd = common.to_bytes(row.get('passwd', ''))
 			cfg = {'password': passwd}
 			if 'id' in row:
 				self.port_uid_table[row['port']] = row['id']
@@ -194,7 +192,7 @@ class TransferBase(object):
 		self.mu_ports = mu_servers
 
 	def clear_cache(self, port):
-		if port in self.force_update_transfer: del self.force_update_transfer[port]
+		if port in self.force_update_transfer: self.force_update_transfer.discard(port)
 		if port in self.last_get_transfer: del self.last_get_transfer[port]
 		if port in self.last_update_transfer: del self.last_update_transfer[port]
 
@@ -236,7 +234,7 @@ class TransferBase(object):
 		try:
 			import resource
 			logging.info('current process RLIMIT_NOFILE resource: soft %d hard %d'  % resource.getrlimit(resource.RLIMIT_NOFILE))
-		except:
+		except (ImportError, ResourceWarning):
 			pass
 
 		try:
@@ -276,7 +274,8 @@ class TransferBase(object):
 	@staticmethod
 	def thread_db_stop():
 		global db_instance
-		db_instance.event.set()
+		if db_instance is not None:
+			db_instance.event.set()
 
 class DbTransfer(TransferBase):
 	def __init__(self):
@@ -470,11 +469,13 @@ class Dbv3Transfer(DbTransfer):
 				cur = conn.cursor()
 				try:
 					if id in self.port_uid_table:
-						cur.execute("INSERT INTO `user_traffic_log` (`id`, `user_id`, `u`, `d`, `node_id`, `rate`, `traffic`, `log_time`) VALUES (NULL, '" + \
-							str(self.port_uid_table[id]) + "', '" + str(transfer[0]) + "', '" + str(transfer[1]) + "', '" + \
-							str(self.cfg["node_id"]) + "', '" + str(self.cfg["transfer_mul"]) + "', '" + \
-							self.traffic_format((transfer[0] + transfer[1]) * self.cfg["transfer_mul"]) + "', unix_timestamp()); ")
-				except:
+						cur.execute("INSERT INTO `user_traffic_log` "
+									"(`id`, `user_id`, `u`, `d`, `node_id`, `rate`, `traffic`, `log_time`) "
+									"VALUES (NULL, %s, %s, %s, %s, %s, %s, unix_timestamp())",
+									(self.port_uid_table[id], int(transfer[0]), int(transfer[1]),
+									 self.cfg["node_id"], self.cfg["transfer_mul"],
+									 self.traffic_format((transfer[0] + transfer[1]) * self.cfg["transfer_mul"])))
+				except Exception:
 					logging.warn('no `user_traffic_log` in db')
 				cur.close()
 
@@ -499,22 +500,25 @@ class Dbv3Transfer(DbTransfer):
 			try:
 				cur = conn.cursor()
 				try:
-					cur.execute("INSERT INTO `ss_node_online_log` (`id`, `node_id`, `online_user`, `log_time`) VALUES (NULL, '" + \
-						str(self.cfg["node_id"]) + "', '" + str(alive_user_count) + "', unix_timestamp()); ")
+					cur.execute("INSERT INTO `ss_node_online_log` "
+								"(`id`, `node_id`, `online_user`, `log_time`) "
+								"VALUES (NULL, %s, %s, unix_timestamp())",
+								(self.cfg["node_id"], alive_user_count))
 				except Exception as e:
 					logging.error(e)
 				cur.close()
 
 				cur = conn.cursor()
 				try:
-					cur.execute("INSERT INTO `" + self.ss_node_info_name + "` (`id`, `node_id`, `uptime`, `load`, `log_time`) VALUES (NULL, '" + \
-						str(self.cfg["node_id"]) + "', '" + str(self.uptime()) + "', '" + \
-						str(self.load()) + "', unix_timestamp()); ")
+					cur.execute("INSERT INTO `" + self.ss_node_info_name + "` "
+								"(`id`, `node_id`, `uptime`, `load`, `log_time`) "
+								"VALUES (NULL, %s, %s, %s, unix_timestamp())",
+								(self.cfg["node_id"], self.uptime(), self.load()))
 				except Exception as e:
 					logging.error(e)
 				cur.close()
-			except:
-				logging.warn('no `ss_node_online_log` or `" + self.ss_node_info_name + "` in db')
+			except Exception:
+				logging.warn('no `ss_node_online_log` or `' + self.ss_node_info_name + '` in db')
 
 		conn.close()
 		return update_transfer
@@ -531,7 +535,7 @@ class Dbv3Transfer(DbTransfer):
 		if self.update_node_state:
 			node_info_keys = ['traffic_rate']
 			try:
-				cur.execute("SELECT " + ','.join(node_info_keys) +" FROM ss_node where `id`='" + str(self.cfg["node_id"]) + "'")
+				cur.execute("SELECT " + ','.join(node_info_keys) + " FROM ss_node WHERE `id` = %s", (self.cfg["node_id"],))
 				nodeinfo = cur.fetchone()
 			except Exception as e:
 				logging.error(e)

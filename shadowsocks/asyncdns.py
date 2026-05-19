@@ -84,7 +84,7 @@ def detect_ipv6_supprot():
             s.connect(('::1', 0))
             print('IPv6 support')
             return True
-        except:
+        except Exception:
             pass
     print('IPv6 not support')
     return False

@@ -46,16 +46,18 @@ chr = compat_chr
 connect_log = logging.debug
 
 def to_bytes(s):
-    if bytes != str:
-        if type(s) == str:
-            return s.encode('utf-8')
+    if isinstance(s, bytes):
+        return s
+    if isinstance(s, str):
+        return s.encode('utf-8')
     return s
 
 
 def to_str(s):
-    if bytes != str:
-        if type(s) == bytes:
-            return s.decode('utf-8')
+    if isinstance(s, str):
+        return s
+    if isinstance(s, bytes):
+        return s.decode('utf-8')
     return s
 
 def int32(x):
@@ -69,12 +71,17 @@ def int32(x):
             return -2147483648
     return x
 
+def _byte_to_int(b):
+    if isinstance(b, int):
+        return b
+    return ord(b)
+
 def inet_ntop(family, ipstr):
     if family == socket.AF_INET:
         return to_bytes(socket.inet_ntoa(ipstr))
     elif family == socket.AF_INET6:
         import re
-        v6addr = ':'.join(('%02X%02X' % (ord(i), ord(j))).lstrip('0')
+        v6addr = ':'.join(('%02X%02X' % (_byte_to_int(i), _byte_to_int(j))).lstrip('0')
                           for i, j in zip(ipstr[::2], ipstr[1::2]))
         v6addr = re.sub('::+', '::', v6addr, count=1)
         return to_bytes(v6addr)
@@ -88,7 +95,7 @@ def inet_pton(family, addr):
         if '.' in addr:  # a v4 addr
             v4addr = addr[addr.rindex(':') + 1:]
             v4addr = socket.inet_aton(v4addr)
-            v4addr = ['%02X' % ord(x) for x in v4addr]
+            v4addr = ['%02X' % _byte_to_int(x) for x in v4addr]
             v4addr.insert(2, ':')
             newaddr = addr[:addr.rindex(':') + 1] + ''.join(v4addr)
             return inet_pton(family, newaddr)
@@ -104,25 +111,31 @@ def inet_pton(family, addr):
                     else:
                         break
                 break
-        return b''.join((chr(i // 256) + chr(i % 256)) for i in dbyts)
+        return b''.join(compat_chr(i // 256) + compat_chr(i % 256) for i in dbyts)
     else:
         raise RuntimeError("What family?")
 
 
 def is_ip(address):
-    for family in (socket.AF_INET, socket.AF_INET6):
+    addr = to_str(address) if not isinstance(address, str) else address
+    # quick guess: ':' indicates IPv6, '.' indicates IPv4
+    families = [socket.AF_INET6, socket.AF_INET] if ':' in addr else [socket.AF_INET, socket.AF_INET6]
+    for family in families:
         try:
-            if type(address) != str:
-                address = address.decode('utf8')
-            inet_pton(family, address)
+            inet_pton(family, addr)
             return family
         except (TypeError, ValueError, OSError, IOError):
             pass
     return False
 
 
+_regex_cache = {}
+
 def match_regex(regex, text):
-    regex = re.compile(regex)
+    if isinstance(regex, str):
+        if regex not in _regex_cache:
+            _regex_cache[regex] = re.compile(regex)
+        regex = _regex_cache[regex]
     for item in regex.findall(text):
         return True
     return False

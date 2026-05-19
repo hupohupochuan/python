@@ -59,12 +59,40 @@ def match_begin(str1, str2):
             return True
     return False
 
+COMPACT_THRESHOLD = 65536
+
 class auth_base(plain.plain):
     def __init__(self, method):
         super(auth_base, self).__init__(method)
         self.method = method
         self.no_compatible_method = ''
         self.overhead = 7
+        self._recv_off = 0
+
+    def _compact_recv_buf(self):
+        if self._recv_off > 0:
+            self.recv_buf = self.recv_buf[self._recv_off:]
+            self._recv_off = 0
+
+    def _recv_append(self, buf):
+        if self._recv_off > COMPACT_THRESHOLD:
+            self._compact_recv_buf()
+        self.recv_buf += buf
+
+    def _recv_consume(self, n):
+        self._recv_off += n
+
+    def _recv_reset(self):
+        self.recv_buf = b''
+        self._recv_off = 0
+
+    def _recv_len(self):
+        return len(self.recv_buf) - self._recv_off
+
+    def _recv_view(self, start, end=None):
+        if end is None:
+            return self.recv_buf[self._recv_off + start]
+        return self.recv_buf[self._recv_off + start:self._recv_off + end]
 
     def init_data(self):
         return ''
@@ -269,32 +297,32 @@ class auth_sha1_v4(auth_base):
     def client_post_decrypt(self, buf):
         if self.raw_trans:
             return buf
-        self.recv_buf += buf
+        self._recv_append(buf)
         out_buf = b''
-        while len(self.recv_buf) > 4:
-            crc = struct.pack('<H', binascii.crc32(self.recv_buf[:2]) & 0xFFFF)
-            if crc != self.recv_buf[2:4]:
+        while self._recv_len() > 4:
+            crc = struct.pack('<H', binascii.crc32(self._recv_view(0, 2)) & 0xFFFF)
+            if crc != self._recv_view(2, 4):
                 raise Exception('client_post_decrypt data uncorrect crc')
-            length = struct.unpack('>H', self.recv_buf[:2])[0]
+            length = struct.unpack('>H', self._recv_view(0, 2))[0]
             if length >= 8192 or length < 7:
                 self.raw_trans = True
-                self.recv_buf = b''
+                self._recv_reset()
                 raise Exception('client_post_decrypt data error')
-            if length > len(self.recv_buf):
+            if length > self._recv_len():
                 break
 
-            if struct.pack('<I', zlib.adler32(self.recv_buf[:length - 4]) & 0xFFFFFFFF) != self.recv_buf[length - 4:length]:
+            if struct.pack('<I', zlib.adler32(self._recv_view(0, length - 4)) & 0xFFFFFFFF) != self._recv_view(length - 4, length):
                 self.raw_trans = True
-                self.recv_buf = b''
+                self._recv_reset()
                 raise Exception('client_post_decrypt data uncorrect checksum')
 
-            pos = common.ord(self.recv_buf[4])
+            pos = common.ord(self._recv_view(4))
             if pos < 255:
                 pos += 4
             else:
-                pos = struct.unpack('>H', self.recv_buf[5:7])[0] + 4
-            out_buf += self.recv_buf[pos:length - 4]
-            self.recv_buf = self.recv_buf[length:]
+                pos = struct.unpack('>H', self._recv_view(5, 7))[0] + 4
+            out_buf += self._recv_view(pos, length - 4)
+            self._recv_consume(length)
 
         if out_buf:
             self.decrypt_packet_num += 1
@@ -313,29 +341,29 @@ class auth_sha1_v4(auth_base):
     def server_post_decrypt(self, buf):
         if self.raw_trans:
             return (buf, False)
-        self.recv_buf += buf
+        self._recv_append(buf)
         out_buf = b''
         sendback = False
 
         if not self.has_recv_header:
-            if len(self.recv_buf) <= 6:
+            if self._recv_len() <= 6:
                 return (b'', False)
-            crc = struct.pack('<I', binascii.crc32(self.recv_buf[:2] + self.salt + self.server_info.key) & 0xFFFFFFFF)
-            if crc != self.recv_buf[2:6]:
+            crc = struct.pack('<I', binascii.crc32(self._recv_view(0, 2) + self.salt + self.server_info.key) & 0xFFFFFFFF)
+            if crc != self._recv_view(2, 6):
                 return self.not_match_return(self.recv_buf)
-            length = struct.unpack('>H', self.recv_buf[:2])[0]
-            if length > len(self.recv_buf):
+            length = struct.unpack('>H', self._recv_view(0, 2))[0]
+            if length > self._recv_len():
                 return (b'', False)
-            sha1data = hmac.new(self.server_info.recv_iv + self.server_info.key, self.recv_buf[:length - 10], hashlib.sha1).digest()[:10]
-            if sha1data != self.recv_buf[length - 10:length]:
+            sha1data = hmac.new(self.server_info.recv_iv + self.server_info.key, self._recv_view(0, length - 10), hashlib.sha1).digest()[:10]
+            if sha1data != self._recv_view(length - 10, length):
                 logging.error('auth_sha1_v4 data uncorrect auth HMAC-SHA1')
                 return self.not_match_return(self.recv_buf)
-            pos = common.ord(self.recv_buf[6])
+            pos = common.ord(self._recv_view(6))
             if pos < 255:
                 pos += 6
             else:
-                pos = struct.unpack('>H', self.recv_buf[7:9])[0] + 6
-            out_buf = self.recv_buf[pos:length - 10]
+                pos = struct.unpack('>H', self._recv_view(7, 9))[0] + 6
+            out_buf = self._recv_view(pos, length - 10)
             if len(out_buf) < 12:
                 logging.info('auth_sha1_v4: too short, data %s' % (binascii.hexlify(self.recv_buf),))
                 return self.not_match_return(self.recv_buf)
@@ -354,13 +382,13 @@ class auth_sha1_v4(auth_base):
             else:
                 logging.info('auth_sha1_v4: auth fail, data %s' % (binascii.hexlify(out_buf),))
                 return self.not_match_return(self.recv_buf)
-            self.recv_buf = self.recv_buf[length:]
+            self._recv_consume(length)
             self.has_recv_header = True
             sendback = True
 
-        while len(self.recv_buf) > 4:
-            crc = struct.pack('<H', binascii.crc32(self.recv_buf[:2]) & 0xFFFF)
-            if crc != self.recv_buf[2:4]:
+        while self._recv_len() > 4:
+            crc = struct.pack('<H', binascii.crc32(self._recv_view(0, 2)) & 0xFFFF)
+            if crc != self._recv_view(2, 4):
                 self.raw_trans = True
                 logging.info('auth_sha1_v4: wrong crc')
                 if self.decrypt_packet_num == 0:
@@ -368,34 +396,34 @@ class auth_sha1_v4(auth_base):
                     return (b'E'*2048, False)
                 else:
                     raise Exception('server_post_decrype data error')
-            length = struct.unpack('>H', self.recv_buf[:2])[0]
+            length = struct.unpack('>H', self._recv_view(0, 2))[0]
             if length >= 8192 or length < 7:
                 self.raw_trans = True
-                self.recv_buf = b''
+                self._recv_reset()
                 if self.decrypt_packet_num == 0:
                     logging.info('auth_sha1_v4: over size')
                     return (b'E'*2048, False)
                 else:
                     raise Exception('server_post_decrype data error')
-            if length > len(self.recv_buf):
+            if length > self._recv_len():
                 break
 
-            if struct.pack('<I', zlib.adler32(self.recv_buf[:length - 4]) & 0xFFFFFFFF) != self.recv_buf[length - 4:length]:
-                logging.info('auth_sha1_v4: checksum error, data %s' % (binascii.hexlify(self.recv_buf[:length]),))
+            if struct.pack('<I', zlib.adler32(self._recv_view(0, length - 4)) & 0xFFFFFFFF) != self._recv_view(length - 4, length):
+                logging.info('auth_sha1_v4: checksum error, data %s' % (binascii.hexlify(self._recv_view(0, length)),))
                 self.raw_trans = True
-                self.recv_buf = b''
+                self._recv_reset()
                 if self.decrypt_packet_num == 0:
                     return (b'E'*2048, False)
                 else:
                     raise Exception('server_post_decrype data uncorrect checksum')
 
-            pos = common.ord(self.recv_buf[4])
+            pos = common.ord(self._recv_view(4))
             if pos < 255:
                 pos += 4
             else:
-                pos = struct.unpack('>H', self.recv_buf[5:7])[0] + 4
-            out_buf += self.recv_buf[pos:length - 4]
-            self.recv_buf = self.recv_buf[length:]
+                pos = struct.unpack('>H', self._recv_view(5, 7))[0] + 4
+            out_buf += self._recv_view(pos, length - 4)
+            self._recv_consume(length)
             if pos == length - 4:
                 sendback = True
 
@@ -593,34 +621,34 @@ class auth_aes128_sha1(auth_base):
     def client_post_decrypt(self, buf):
         if self.raw_trans:
             return buf
-        self.recv_buf += buf
+        self._recv_append(buf)
         out_buf = b''
-        while len(self.recv_buf) > 4:
+        while self._recv_len() > 4:
             mac_key = self.user_key + struct.pack('<I', self.recv_id)
-            mac = hmac.new(mac_key, self.recv_buf[:2], self.hashfunc).digest()[:2]
-            if mac != self.recv_buf[2:4]:
+            mac = hmac.new(mac_key, self._recv_view(0, 2), self.hashfunc).digest()[:2]
+            if mac != self._recv_view(2, 4):
                 raise Exception('client_post_decrypt data uncorrect mac')
-            length = struct.unpack('<H', self.recv_buf[:2])[0]
+            length = struct.unpack('<H', self._recv_view(0, 2))[0]
             if length >= 8192 or length < 7:
                 self.raw_trans = True
-                self.recv_buf = b''
+                self._recv_reset()
                 raise Exception('client_post_decrypt data error')
-            if length > len(self.recv_buf):
+            if length > self._recv_len():
                 break
 
-            if hmac.new(mac_key, self.recv_buf[:length - 4], self.hashfunc).digest()[:4] != self.recv_buf[length - 4:length]:
+            if hmac.new(mac_key, self._recv_view(0, length - 4), self.hashfunc).digest()[:4] != self._recv_view(length - 4, length):
                 self.raw_trans = True
-                self.recv_buf = b''
+                self._recv_reset()
                 raise Exception('client_post_decrypt data uncorrect checksum')
 
             self.recv_id = (self.recv_id + 1) & 0xFFFFFFFF
-            pos = common.ord(self.recv_buf[4])
+            pos = common.ord(self._recv_view(4))
             if pos < 255:
                 pos += 4
             else:
-                pos = struct.unpack('<H', self.recv_buf[5:7])[0] + 4
-            out_buf += self.recv_buf[pos:length - 4]
-            self.recv_buf = self.recv_buf[length:]
+                pos = struct.unpack('<H', self._recv_view(5, 7))[0] + 4
+            out_buf += self._recv_view(pos, length - 4)
+            self._recv_consume(length)
 
         return out_buf
 
@@ -639,28 +667,28 @@ class auth_aes128_sha1(auth_base):
     def server_post_decrypt(self, buf):
         if self.raw_trans:
             return (buf, False)
-        self.recv_buf += buf
+        self._recv_append(buf)
         out_buf = b''
         sendback = False
 
         if not self.has_recv_header:
-            if len(self.recv_buf) >= 7 or len(self.recv_buf) in [2, 3]:
-                recv_len = min(len(self.recv_buf), 7)
+            if self._recv_len() >= 7 or self._recv_len() in [2, 3]:
+                recv_len = min(self._recv_len(), 7)
                 mac_key = self.server_info.recv_iv + self.server_info.key
-                sha1data = hmac.new(mac_key, self.recv_buf[:1], self.hashfunc).digest()[:recv_len - 1]
-                if sha1data != self.recv_buf[1:recv_len]:
+                sha1data = hmac.new(mac_key, self._recv_view(0, 1), self.hashfunc).digest()[:recv_len - 1]
+                if sha1data != self._recv_view(1, recv_len):
                     return self.not_match_return(self.recv_buf)
 
-            if len(self.recv_buf) < 31:
+            if self._recv_len() < 31:
                 return (b'', False)
-            sha1data = hmac.new(mac_key, self.recv_buf[7:27], self.hashfunc).digest()[:4]
-            if sha1data != self.recv_buf[27:31]:
+            sha1data = hmac.new(mac_key, self._recv_view(7, 27), self.hashfunc).digest()[:4]
+            if sha1data != self._recv_view(27, 31):
                 logging.error('%s data uncorrect auth HMAC-SHA1 from %s:%d, data %s' % (self.no_compatible_method, self.server_info.client, self.server_info.client_port, binascii.hexlify(self.recv_buf)))
-                if len(self.recv_buf) < 31 + self.extra_wait_size:
+                if self._recv_len() < 31 + self.extra_wait_size:
                     return (b'', False)
                 return self.not_match_return(self.recv_buf)
 
-            uid = self.recv_buf[7:11]
+            uid = self._recv_view(7, 11)
             if uid in self.server_info.users:
                 self.user_id = uid
                 self.user_key = self.hashfunc(self.server_info.users[uid]).digest()
@@ -671,17 +699,17 @@ class auth_aes128_sha1(auth_base):
                 else:
                     self.user_key = self.server_info.recv_iv
             encryptor = encrypt.Encryptor(to_bytes(base64.b64encode(self.user_key)) + self.salt, 'aes-128-cbc')
-            head = encryptor.decrypt(b'\x00' * 16 + self.recv_buf[11:27] + b'\x00') # need an extra byte or recv empty
+            head = encryptor.decrypt(b'\x00' * 16 + self._recv_view(11, 27) + b'\x00')
             length = struct.unpack('<H', head[12:14])[0]
-            if len(self.recv_buf) < length:
+            if self._recv_len() < length:
                 return (b'', False)
 
             utc_time = struct.unpack('<I', head[:4])[0]
             client_id = struct.unpack('<I', head[4:8])[0]
             connection_id = struct.unpack('<I', head[8:12])[0]
             rnd_len = struct.unpack('<H', head[14:16])[0]
-            if hmac.new(self.user_key, self.recv_buf[:length - 4], self.hashfunc).digest()[:4] != self.recv_buf[length - 4:length]:
-                logging.info('%s: checksum error, data %s' % (self.no_compatible_method, binascii.hexlify(self.recv_buf[:length])))
+            if hmac.new(self.user_key, self._recv_view(0, length - 4), self.hashfunc).digest()[:4] != self._recv_view(length - 4, length):
+                logging.info('%s: checksum error, data %s' % (self.no_compatible_method, binascii.hexlify(self._recv_view(0, length))))
                 return self.not_match_return(self.recv_buf)
             time_dif = common.int32(utc_time - (int(time.time()) & 0xffffffff))
             if time_dif < -self.max_time_dif or time_dif > self.max_time_dif:
@@ -689,20 +717,20 @@ class auth_aes128_sha1(auth_base):
                 return self.not_match_return(self.recv_buf)
             elif self.server_info.data.insert(self.user_id, client_id, connection_id):
                 self.has_recv_header = True
-                out_buf = self.recv_buf[31 + rnd_len:length - 4]
+                out_buf = self._recv_view(31 + rnd_len, length - 4)
                 self.client_id = client_id
                 self.connection_id = connection_id
             else:
                 logging.info('%s: auth fail, data %s' % (self.no_compatible_method, binascii.hexlify(out_buf)))
                 return self.not_match_return(self.recv_buf)
-            self.recv_buf = self.recv_buf[length:]
+            self._recv_consume(length)
             self.has_recv_header = True
             sendback = True
 
-        while len(self.recv_buf) > 4:
+        while self._recv_len() > 4:
             mac_key = self.user_key + struct.pack('<I', self.recv_id)
-            mac = hmac.new(mac_key, self.recv_buf[:2], self.hashfunc).digest()[:2]
-            if mac != self.recv_buf[2:4]:
+            mac = hmac.new(mac_key, self._recv_view(0, 2), self.hashfunc).digest()[:2]
+            if mac != self._recv_view(2, 4):
                 self.raw_trans = True
                 logging.info(self.no_compatible_method + ': wrong crc')
                 if self.recv_id == 0:
@@ -710,35 +738,35 @@ class auth_aes128_sha1(auth_base):
                     return (b'E'*2048, False)
                 else:
                     raise Exception('server_post_decrype data error')
-            length = struct.unpack('<H', self.recv_buf[:2])[0]
+            length = struct.unpack('<H', self._recv_view(0, 2))[0]
             if length >= 8192 or length < 7:
                 self.raw_trans = True
-                self.recv_buf = b''
+                self._recv_reset()
                 if self.recv_id == 0:
                     logging.info(self.no_compatible_method + ': over size')
                     return (b'E'*2048, False)
                 else:
                     raise Exception('server_post_decrype data error')
-            if length > len(self.recv_buf):
+            if length > self._recv_len():
                 break
 
-            if hmac.new(mac_key, self.recv_buf[:length - 4], self.hashfunc).digest()[:4] != self.recv_buf[length - 4:length]:
-                logging.info('%s: checksum error, data %s' % (self.no_compatible_method, binascii.hexlify(self.recv_buf[:length])))
+            if hmac.new(mac_key, self._recv_view(0, length - 4), self.hashfunc).digest()[:4] != self._recv_view(length - 4, length):
+                logging.info('%s: checksum error, data %s' % (self.no_compatible_method, binascii.hexlify(self._recv_view(0, length))))
                 self.raw_trans = True
-                self.recv_buf = b''
+                self._recv_reset()
                 if self.recv_id == 0:
                     return (b'E'*2048, False)
                 else:
                     raise Exception('server_post_decrype data uncorrect checksum')
 
             self.recv_id = (self.recv_id + 1) & 0xFFFFFFFF
-            pos = common.ord(self.recv_buf[4])
+            pos = common.ord(self._recv_view(4))
             if pos < 255:
                 pos += 4
             else:
-                pos = struct.unpack('<H', self.recv_buf[5:7])[0] + 4
-            out_buf += self.recv_buf[pos:length - 4]
-            self.recv_buf = self.recv_buf[length:]
+                pos = struct.unpack('<H', self._recv_view(5, 7))[0] + 4
+            out_buf += self._recv_view(pos, length - 4)
+            self._recv_consume(length)
             if pos == length - 4:
                 sendback = True
 
